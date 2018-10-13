@@ -22,6 +22,7 @@ from comment_parser.parsers import c_parser
 from comment_parser.parsers import go_parser
 from comment_parser.parsers import js_parser
 from comment_parser.parsers import shell_parser
+from comment_parser.parsers import python_parser
 
 MIME_MAP = {
     'text/x-c': c_parser,               # C
@@ -29,7 +30,8 @@ MIME_MAP = {
     'text/x-go': go_parser,             # Go
     'text/x-java-source': c_parser,     # Java
     'text/x-javascript': js_parser,     # Javascript
-    'text/x-shellscript': shell_parser  # Unix shell
+    'text/x-shellscript': shell_parser, # Unix shell
+    'text/x-python': python_parser      # Python
 }
 
 
