@@ -93,7 +93,7 @@ def extract_comments(filename):
                         current_comment = ''
                         state = 0
                     else:
-                        current_comment += '*'
+                        # current_comment += '*'
                         # Care for multiple '*' in a row
                         if char != '*':
                             current_comment += char
