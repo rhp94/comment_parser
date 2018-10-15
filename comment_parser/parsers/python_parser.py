@@ -1,63 +1,60 @@
 #!/usr/bin/python
-"""This module provides methods for parsing comments from Python."""
+"""This module provides methods
+for parsing comments from Python."""
 
 from comment_parser.parsers import common as common
+import tokenize
+import ast
+import io
 
 
 def extract_comments(filename):
+    """Extracts a list of comments from the given Python source file.
+
+        Comments are represented with the Comment class found in the common module.
+        Python comments come in two forms, single and multi-line comments.
+            - Single-line comments begin with '#' and continue to the end of line.
+            - Multi-line comments are enclosed within triple double quotes as docstrings and can span
+                multiple lines of code.
+
+        Note that this doesn't take language-specific preprocessor directives into
+        consideration.
+
+        Args:
+            filename: String name of the file to extract comments from.
+        Returns:
+            Python list of common.Comment in the order that they appear in the file.
+        Raises:
+            common.FileError: File was unable to be open or read.
+        """
     try:
+        comments = []
+        # Parse single line comments
         with open(filename, 'r') as source_file:
-            state = 0
-            current_comment = ''
-            comments = []
-            line_counter = 1
-            comment_start = 1
-            while True:
-                char = source_file.read(1)
-                if not char:
-                    if state == 1:
-                        # Was in single line comment. Create comment.
-                        comment = common.Comment(current_comment, line_counter)
+            file_contents = source_file.read()
+            buf = io.StringIO(file_contents)
+            for token_type, token, start, end, line in tokenize.generate_tokens(buf.readline):
+                if token_type == tokenize.COMMENT:
+                    token = token.replace('#', '', 1)
+                    # Create comment using token and line number
+                    comment = common.Comment(token, start[0])
+                    comments.append(comment)
+
+            # Parse multi-line comments/docstrings
+            module = ast.parse(file_contents)
+            for node in ast.walk(module):
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.Module)):
+                    if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Str):
+                        token = node.body[0].value.s
+                        # Find beginning of comment
+                        end_line = node.body[0].value.lineno
+                        line_count = token.count('\n')
+                        start_line = end_line - line_count
+                        # Create comment using token and line number
+                        comment = common.Comment(token, start_line, multiline=True)
                         comments.append(comment)
-                    return comments
-                if state == 0:
-                    # Beginning of new line
-                    # Check if new line starts with a comment
-                    if char == '#':
-                        state = 1
-                    elif char == '"':
-                        state = 2
-                    elif char == "'":
-                        state = 3
-                    else:
-                        state = 4
-                elif state == 1:
-                    # Found a single line comment. Create comment
-                    if char == '\n':
-                        comment = common.Comment(current_comment, line_counter)
-                        comments.append(comment)
-                        current_comment = ''
-                    else:
-                        current_comment += char
-                elif state == 4:
-                    # Parse lines that don't begin with a '#' or quotes
-                    # Wait for '#' to occur in line
-                    if char == '#':
-                        state = 1
-                    elif char == '"' or char == "'":
-                        state = 5
-                elif state == 5:
-                    # In string literal, expect literal end or escape char.
-                    if char == '"' or char == "'":
-                        state = 4
-                    elif char == '\\':
-                        state = 6
-                elif state is 6:
-                    # In string literal, escaping current char.
-                    state = 5
-                if char == '\n':
-                    # End of line
-                    line_counter += 1
-                    state = 0
+
+            source_file.close()
+        return comments
     except OSError as exception:
         raise common.FileError(str(exception))
