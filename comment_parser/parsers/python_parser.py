@@ -59,15 +59,15 @@ def parse_multi_line_comments(file_contents, comments, start_lines_dict, end_lin
         line.append(match.end())
 
     # Match triple double quoted strings spanning multiple lines
-    pattern = re.compile('^[ \t]*("{3}([^"]|\n)*"{3})$', re.MULTILINE | re.DOTALL)
+    pattern = re.compile('^[ \t]*"""[^"\\\\]*(?:(?:\\\\.|"{1,2}(?!"))[^"\\\\]*)*"""$', re.MULTILINE | re.DOTALL)
     comment_index = len(comments)
     for match in re.finditer(pattern, file_contents):
 
         # Store text and start and end line numbers of match
-        start_line = next(i for i in range(len(line)) if line[i] > match.start(1)) + 1
-        match = match.group(1)
+        start_line = next(i for i in range(len(line)) if line[i] > match.start(0)) + 1
+        match = match.group(0)
         end_line = start_line + match.count("\n")
-        match = match.replace('"""', '')
+        match = match.replace('"""', '').strip()
 
         # Create a comment using matching group and line numbers
         comment = common.Comment(text=match, start_line=start_line, end_line=end_line, multiline=True)
