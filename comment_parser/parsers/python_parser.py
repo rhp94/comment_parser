@@ -3,53 +3,60 @@
 for parsing comments from Python."""
 
 from comment_parser.parsers import common as common
+from comment_parser.parsers import ast_visitor
 import tokenize
-import ast
 import asttokens
+import ast
 import io
 import re
 
 
-def parse_single_line_comments(file_contents, comments, end_lines_dict):
+def combine_consecutive_comments(comments, current_comment):
+    if len(comments) > 0:
+        previous_comment = comments[len(comments) - 1]
+        if current_comment.start_line() == previous_comment.end_line() + 1:
+            del comments[len(comments) - 1]
+            combined_text = previous_comment.text() + ' ' + current_comment.text()
+            new_comment = common.Comment(text=combined_text, start_line=previous_comment.start_line(),
+                                         end_line=current_comment.end_line())
+            return new_comment
+    return current_comment
+
+
+def parse_single_line_comments(file_contents, comments):
     """ Extracts single line comments and adds them to a list.
-        Also stores line numbers on which the comments occur.
 
         Args:
-            file_contents: (str) from which to extract comments
+            file_contents: (str) from which comments are to be extracted
             comments: list of comments. Each entry is a Comment class object
-            end_lines_dict:
-                key - line number on which a comment occurs
-                value - index of comment
     """
     buf = io.StringIO(file_contents)
-    comment_index = len(comments)
+    prev_line = ''
+    prev_token = '-'
     for token_type, token, start, end, line in tokenize.generate_tokens(buf.readline):
         if token_type == tokenize.COMMENT:
-            token = token.replace('#', '', 1)
+            file_contents = file_contents.replace(token, ' ', 1)
+            comment_text = token.replace('#', '', 1)
             line_number = start[0]
 
             # Create comment using token text and line number
-            comment = common.Comment(text=token, start_line=line_number, end_line=line_number)
+            comment = common.Comment(text=comment_text, start_line=line_number, end_line=line_number)
+            if re.match(r"^[ \t]*" + re.escape(token) + r"[ \t]*$", line) and \
+                    re.match(r"^[ \t]*" + re.escape(prev_token) + r"[ \t]*$", prev_line):
+                comment = combine_consecutive_comments(comments, comment)
             comments.append(comment)
 
-            # Add key-value pair of line number and comment index
-            end_lines_dict[line_number] = comment_index
-            comment_index += 1
+            prev_line = line
+            prev_token = token
+    return file_contents
 
 
-def parse_multi_line_comments(file_contents, comments, start_lines_dict, end_lines_dict):
+def parse_multi_line_comments(file_contents, comments):
     """ Extracts multi line comments and adds them to a list.
-        Also stores start and end line numbers of each comment.
 
         Args:
-            file_contents: (str) from which to extract comments
+            file_contents: (str) from which comments are to be extracted
             comments: list of comments. Each entry is a Comment class object
-            start_lines_dict:
-                key - starting line number of comment
-                value - index of comment
-            end_lines_dict:
-                key - ending line number of comment
-                value - index of comment
     """
 
     # Store line numbers
@@ -60,9 +67,7 @@ def parse_multi_line_comments(file_contents, comments, start_lines_dict, end_lin
 
     # Match triple double quoted strings spanning multiple lines
     pattern = re.compile('^[ \t]*"""[^"\\\\]*(?:(?:\\\\.|"{1,2}(?!"))[^"\\\\]*)*"""$', re.MULTILINE | re.DOTALL)
-    comment_index = len(comments)
     for match in re.finditer(pattern, file_contents):
-
         # Store text and start and end line numbers of match
         start_line = next(i for i in range(len(line)) if line[i] > match.start(0)) + 1
         match = match.group(0)
@@ -73,42 +78,75 @@ def parse_multi_line_comments(file_contents, comments, start_lines_dict, end_lin
         comment = common.Comment(text=match, start_line=start_line, end_line=end_line, multiline=True)
         comments.append(comment)
 
-        # Add key-value pair of line number and comment index
-        start_lines_dict[start_line] = comment_index
-        end_lines_dict[end_line] = comment_index
-        comment_index += 1
+    # Match triple single quoted strings spanning multiple lines
+    pattern = re.compile("^[ \t]*'''[^'\\\\]*(?:(?:\\\\.|'{1,2}(?!'))[^'\\\\]*)*'''$", re.MULTILINE | re.DOTALL)
+    for match in re.finditer(pattern, file_contents):
+        # Store text and start and end line numbers of match
+        start_line = next(i for i in range(len(line)) if line[i] > match.start(0)) + 1
+        match = match.group(0)
+        end_line = start_line + match.count("\n")
+        match = match.replace("'''", '').strip()
+
+        # Create a comment using matching group and line numbers
+        comment = common.Comment(text=match, start_line=start_line, end_line=end_line, multiline=True)
+        comments.append(comment)
 
 
-def tag_comment(comments, comment_index, node, ast_tokens, is_on_next_line=False):
+def tag_comments(file_content, comments):
     """
-    Tags comments extracted from source file with the name of class/function/identifier they are associated with.
-    Additionally in the case of class/function definitions, the context is also stores (body of the block)
+    Tag comment with node retrieved from AST. Adds node to a list of nodes used as tags for the comment.
 
-        Args:
-            comments: (list) single and multiline comments that have been extracted
-            comment_index: (int) index of current comment in the 'comments' list
-            node: (Node) current Node object of Python Abstract Syntax Tree
-            ast_tokens: Abstract Syntax Tree with tagged tokens
-            is_on_next_line: (boolean) true if comment starts after the current source code line
+    Args:
+        file_content: source file
+        comments: list of comments of Comment class to be tagged
     """
+    # tag comments at the first line of a block
+    ast_tokens = asttokens.ASTTokens(file_content, parse=True)
+    root = ast_tokens.tree
+    for node in ast.walk(root):
+        if node is not None and hasattr(node, 'lineno') and hasattr(node, 'body')\
+                and node.body is not None and hasattr(type(node.body), '__getitem__'):
+            for comment in comments:
+                if node.lineno < comment.start_line() <= node.body[0].lineno and comment.is_multiline() \
+                        or node.lineno < comment.start_line() < node.body[0].lineno and not comment.is_multiline():
+                    node_text = ast_tokens.get_text(node)
+                    singe_quote_comments = re.compile("^[ \t]*'''[^'\\\\]*(?:(?:\\\\.|'{1,2}(?!'))[^'\\\\]*)*'''$",
+                                                      re.MULTILINE | re.DOTALL)
+                    double_quote_comments = re.compile('^[ \t]*"""[^"\\\\]*(?:(?:\\\\.|"{1,2}(?!"))[^"\\\\]*)*"""$',
+                                                       re.MULTILINE | re.DOTALL)
+                    node_text = re.sub(singe_quote_comments, " ", node_text)
+                    node_text = re.sub(double_quote_comments, " ", node_text)
+                    comment.node_list().append((node, node_text))
 
-    # current node is a variable name and comment is present on either the previous or the same line as the node
-    # tag comment with the variable name
-    if isinstance(node, ast.Name) and comments[comment_index].identifier_name() is None and is_on_next_line is False:
-        comments[comment_index].set_identifier_name(node.id)
-    # current node is a class or function definition
-    # tag comment with name and class/function body
-    elif isinstance(node, (ast.ClassDef, ast.FunctionDef)):
-        # get source code text corresponding to the node
-        node_text = ast_tokens.get_text(node)
-        # get body of the definition by removing the class/function signature on the first line
-        body = '\n'.join(node_text.split('\n')[1:])
-        if isinstance(node, ast.ClassDef) and comments[comment_index].class_name() is None:
-            comments[comment_index].set_class_name(node.name)
-        elif isinstance(node, ast.FunctionDef) and comments[comment_index].function_name() is None:
-            comments[comment_index].set_function_name(node.name)
-        comments[comment_index].set_context(body)
-    return
+    # tag comments with source code on the same line/next line
+    for comment in comments:
+        current_line = comment.end_line()
+        next_line = comment.end_line() + 1
+
+        node = ast_visitor.Visitor(ast_tokens).get_node_at_line(root, current_line)
+        if (node is not None and not isinstance(node, ast.Expr)) \
+                or (node is not None and isinstance(node, ast.Expr) and not isinstance(node.value, ast.Str)):
+            node_text = ast_tokens.get_text(node)
+            singe_quote_comments = re.compile("^[ \t]*'''[^'\\\\]*(?:(?:\\\\.|'{1,2}(?!'))[^'\\\\]*)*'''$",
+                                              re.MULTILINE | re.DOTALL)
+            double_quote_comments = re.compile('^[ \t]*"""[^"\\\\]*(?:(?:\\\\.|"{1,2}(?!"))[^"\\\\]*)*"""$',
+                                               re.MULTILINE | re.DOTALL)
+            node_text = re.sub(singe_quote_comments, " ", node_text)
+            node_text = re.sub(double_quote_comments, " ", node_text)
+            comment.node_list().append((node, node_text))
+            # visitor.visit_subtree(node)
+        else:
+            node = ast_visitor.Visitor(ast_tokens).get_node_at_line(root, next_line)
+            if node is not None:
+                node_text = ast_tokens.get_text(node)
+                singe_quote_comments = re.compile("^[ \t]*'''[^'\\\\]*(?:(?:\\\\.|'{1,2}(?!'))[^'\\\\]*)*'''$",
+                                                  re.MULTILINE | re.DOTALL)
+                double_quote_comments = re.compile('^[ \t]*"""[^"\\\\]*(?:(?:\\\\.|"{1,2}(?!"))[^"\\\\]*)*"""$',
+                                                   re.MULTILINE | re.DOTALL)
+                node_text = re.sub(singe_quote_comments, " ", node_text)
+                node_text = re.sub(double_quote_comments, " ", node_text)
+                comment.node_list().append((node, node_text))
+                # visitor.visit_subtree(node)
 
 
 def extract_comments(filename):
@@ -121,9 +159,6 @@ def extract_comments(filename):
             - Multi-line comments are enclosed within triple double quotes as docstrings and can span
                 multiple lines of code.
 
-        Note that this doesn't take language-specific preprocessor directives into
-        consideration.
-
         Args:
             filename: String name of the file to extract comments from.
         Returns:
@@ -132,41 +167,27 @@ def extract_comments(filename):
             common.FileError: File was unable to be open or read.
     """
     comments = []
-    start_lines_dict = {}
-    end_lines_dict = {}
     try:
         with open(filename, 'r') as source_file:
             file_contents = source_file.read()
 
             # extract single and multiline comments from source code file
-            parse_single_line_comments(file_contents, comments, end_lines_dict)
-            parse_multi_line_comments(file_contents, comments, start_lines_dict, end_lines_dict)
+            file_contents = parse_single_line_comments(file_contents, comments)
+            parse_multi_line_comments(file_contents, comments)
+            comments.sort(key=lambda x: x.start_line())
 
-            ast_tokens = asttokens.ASTTokens(file_contents, parse=True)
+            tag_comments(file_contents, comments)
 
-            # for each node in the parse tree, find if any comments are before/after/same line as the source code text
-            # tag each comment with the source code it is associated with
-            for node in ast.walk(ast_tokens.tree):
-                if hasattr(node, 'lineno'):
-                    current_line = node.lineno
-                    prev_line = current_line - 1
-                    next_line = current_line + 1
-
-                    # comment starts and ends on current line
-                    if current_line in end_lines_dict:
-                        comment_index = end_lines_dict[current_line]
-                        tag_comment(comments, comment_index, node, ast_tokens)
-                    # comment ends on previous line
-                    if prev_line in end_lines_dict:
-                        comment_index = end_lines_dict[prev_line]
-                        tag_comment(comments, comment_index, node, ast_tokens)
-                    # comment starts on next line
-                    if next_line in start_lines_dict:
-                        comment_index = start_lines_dict[next_line]
-                        tag_comment(comments, comment_index, node, ast_tokens, is_on_next_line=True)
+            # debug: print comment + code context
+            index = 1
+            for comment in comments:
+                print('\n' + str(index) + '. Comment: ' + comment.text())
+                for node in comment.node_list():
+                    print('NODE: ' + node[0].__class__.__name__)
+                    print('CODE: ' + node[1])
+                index += 1
 
             source_file.close()
-        comments.sort(key=lambda x: x.start_line())
         return comments
     except OSError as exception:
         raise common.FileError(str(exception))
