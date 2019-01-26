@@ -178,15 +178,6 @@ def extract_comments(filename):
 
             tag_comments(file_contents, comments)
 
-            # debug: print comment + code context
-            index = 1
-            for comment in comments:
-                print('\n' + str(index) + '. Comment: ' + comment.text())
-                for node in comment.node_list():
-                    print('NODE: ' + node[0].__class__.__name__)
-                    print('CODE: ' + node[1])
-                index += 1
-
             source_file.close()
         return comments
     except OSError as exception:

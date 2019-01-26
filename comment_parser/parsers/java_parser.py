@@ -6,43 +6,40 @@ from javalang_dev import javalang
 import re
 
 
+def has_annotations(node):
+    if hasattr(node, 'annotations') and node.annotations is not None and len(node.annotations) > 0:
+        return True
+    return False
+
+
 def tag_comments(comments, file_content, eof_line_number):
     tree = javalang.parse.parse(file_content)
 
     for comment in comments:
         for path, node in tree:
-            if node.position.start is not None and type(node).__name__ != 'CompilationUnit':
-                node_start_line = node.position.start[0]
-                if node_start_line == comment.end_line() or node_start_line == comment.end_line() + 1 \
-                        and len(comment.node_list()) == 0:
-
+            if node.position.start is not None and type(node).__name__ not in ['CompilationUnit']:
+                node_start = node.position.start[0]
+                comment_line = comment.end_line()
+                after_comment = comment.end_line() + 1
+                before_comment = comment.start_line() - 1
+                if len(comment.node_list()) == 0 and (node_start == comment_line or node_start == after_comment or
+                                                      (node_start == before_comment and has_annotations(node))):
                     if node.position.end is not None:
-                        node_end_line = node.position.end[0] - 1
+                        node_end = node.position.end[0] - 1
                         if type(node).__name__ == 'PackageDeclaration':
-                            node_end_line += 1
+                            node_end += 1
                     else:
-                        node_end_line = eof_line_number
+                        node_end = eof_line_number
 
                     node_text = ''
                     line_counter = 0
                     for line in file_content.splitlines():
-                        if node_start_line - 1 <= line_counter <= node_end_line - 1:
+                        if node_start - 1 <= line_counter <= node_end - 1:
                             node_text = node_text + line + '\n'
-                        elif line_counter > node_end_line - 1:
+                        elif line_counter > node_end - 1:
                             break
                         line_counter += 1
                     comment.node_list().append((node, node_text))
-
-    # debug: print comment + code context
-    index = 1
-    for comment in comments:
-        print('\n' + str(index) + '. COMMENT: ' + comment.text())
-        print('START: ' + str(comment.start_line()))
-        print('END: ' + str(comment.end_line()))
-        if len(comment.node_list()) > 0:
-            print('NODE: ' + type(comment.node_list()[0][0]).__name__)
-            print('CODE: ' + comment.node_list()[0][1])
-        index += 1
 
 
 def remove_comment(file_content, comment_text, multiline):
@@ -130,5 +127,6 @@ def extract_comments(filename):
                     file_content = remove_comment(file_content, comment_text, is_multiline)
                     comments.append(comment)
             tag_comments(comments, file_content, eof_line_number=file_content.count('\n'))
+            return comments
     except OSError as exception:
         raise common.FileError(str(exception))
